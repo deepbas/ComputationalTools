@@ -1,0 +1,266 @@
+---
+title: "BM_Var_Reduction"
+author: "Deepak Bastola"
+date: "July 9, 2019"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r, message=FALSE, warning=FALSE}
+library(mAr)
+library(mcmcse)
+library(matrixcalc)
+library(mAr)
+library(mcmcse)
+library(matrixcalc)
+library(parallel)
+library(mvtnorm)
+library(Matrix)
+
+```
+
+
+```{r}
+# Univariate
+# Beta1 = User defined relative proportions given to the bias 
+
+linearcomb <- function(beta1, r, s, n, root){
+k=3
+ar1sim <- function (n, rho) {
+  vec <- vector("numeric", n)
+  vec[1] <- 0
+  for (i in 2:n){vec[i] <- rho * vec[i - 1] + rnorm(n=1, mean = 0, sd = 1)}
+  vec
+}
+
+phi <- 0.95
+sigma.true <- 1/(1-phi)^2
+
+if (root == 'cuberoot') b <-  n^(1/3)
+if (root == 'sqroot') b <-  n^(1/2)
+
+out <- ar1sim(n, phi)
+
+b.trial <- c(b/s, b/r, b)
+
+#Each BM estimators at skeleton points
+V <- sapply(1:length(b.trial), function(i) 
+  (mcse(out, method = "bm", size = b.trial[i])$se * sqrt(n))^2)
+
+#Bias and Bias Matrix
+bias <- sapply(1:length(b.trial), function(i) 
+  V[i] - sigma.true)
+L <- bias%*%t(bias)
+
+# Variance of BM estimators
+Var.V <- sapply(1:length(b.trial), function(i) 
+  (2*(b.trial[i]/n)*sigma.true^2))
+
+# Correlations of BM estimators 
+#only depends on relative batch size (square root)
+R <- sapply(1:length(b.trial), function(i) sapply(1:length(b.trial), function(j) 
+  ifelse( i < j, sqrt(b.trial[i]/b.trial[j]), sqrt(b.trial[j]/b.trial[i]))))
+
+# Transform into Covariance matrix
+Covarij <- sqrt(diag(Var.V))%*%R%*%sqrt(diag(Var.V))
+
+#Risk Matrix
+#Beta1 = 2 --> More weight to bias
+#Beta1 = 0.5 --> Equal weight to bias and variance
+
+ones <- matrix(1, nrow = k, ncol = 1)
+Risk <- beta1*L + (1-beta1)*Covarij 
+
+# Optimal Solution
+alpha <- solve(Risk)%*%ones*
+                  (1/as.numeric((t(ones)%*%solve(Risk)%*%ones)))
+
+V.LC <- sum(alpha*V)
+Bias.LC <- V.LC - sigma.true
+
+
+V.final <- t(alpha)%*% Covarij %*%alpha
+
+
+#optimization
+linexloss <-function(param, bias) {param[1]*(exp(param[2]*bias) - param[2]*bias -1)}
+#min <- optim(par = c(2,-1), fn = linexloss, bias = bias, method = "L-BFGS-B", hessian = TRUE, lower = c(0, -Inf), upper = c(Inf, -0.00001))
+min <- optim(par = c(2,2), fn = linexloss, bias = Bias.LC, method = "L-BFGS-B", hessian = TRUE)
+
+return(list(alpha, Bias = c(Bias.LC),  Linexloss = min$value, a = min$par[2], Est=V))
+
+}
+
+```
+
+
+```{r}
+# One-dimensional optimization done.
+nrep <- 500
+r = 5; s = 10
+starttime <- Sys.time()
+sim1 <- mclapply(1:nrep, function(i) linearcomb(beta1 = 1.1, r = r, s=s, n = 1e5, root = "sqroot"), mc.preschedule = TRUE, mc.cores = 4)
+endtime <- Sys.time()
+endtime - starttime
+
+alphas1 <-  lapply(1:nrep, function(i) sim1[[i]][[1]])
+biases1 <- lapply(1:nrep, function(i) sim1[[i]][[2]])
+linexlosses1 <- lapply(1:nrep, function(i) sim1[[i]][[3]])
+
+alpha.avg1 <- Reduce('+', alphas1)/nrep
+bias.avg1 <- Reduce('+', biases1)/nrep
+linexloss.avg1 <- Reduce('+', linexlosses1)
+
+c(round(alpha.avg1,2))
+biascac <- function(alpha, r, s) {sum(alpha*c(s,r,1))}
+round(biascac(alpha.avg1, r,s),2)
+
+
+tau.true <- function(phi) {2*phi/((1-phi^2)*(1-phi)^2)}
+tau.true(0.95)
+#sigma.true <- 1/(1-0.95)^2
+biases1
+
+```
+
+
+```{r}
+nrep <- 10
+r = 3; s = 7
+starttime <- Sys.time()
+sim2 <- mclapply(1:nrep, function(i) linearcomb(beta1 = 0.99, r = r, s = s, n = 5e4, root = "cuberoot"), mc.preschedule = TRUE, mc.cores = 4)
+endtime <- Sys.time()
+endtime - starttime
+
+alphas2 <-  lapply(1:nrep, function(i) sim2[[i]][[1]])
+biases2 <- lapply(1:nrep, function(i) sim2[[i]][[2]])
+linexlosses2 <- lapply(1:nrep, function(i) sim2[[i]][[3]])
+
+alpha.avg2 <- Reduce('+', alphas2)/nrep
+bias.avg2 <- Reduce('+', biases2)/nrep
+linexloss.avg2 <- Reduce('+', linexlosses2)
+
+c(round(alpha.avg2,2))
+biascac <- function(alpha, r, s) {sum(alpha*c(s,r,1))}
+round(biascac(alpha.avg2, r,s),2)
+biases2
+
+```
+
+
+```{r}
+
+#multivariate
+
+linearcomb <- function(k, beta1){
+# skeleton points
+
+k=3
+n <- 1e5
+b <- n^(1/2)
+
+
+
+omega <- diag(p)
+A <- matrix(rnorm(p*p,mean=0,sd=1), p, p)
+B <- A%*%t(A)
+m <- max(eigen(B)$values)
+phi0 <- B/(m+0.001)
+phi <- bdiag(0.90*phi0)
+
+#population covariance
+scratch <- diag((p)^2) - kronecker(phi,phi)
+V.s <- solve(scratch)%*%vec(diag(p))
+V <- matrix(V.s, nrow = p, byrow = TRUE)
+Sigma <- solve(diag(p)-phi)%*%V + V%*%solve(diag(p)-phi) -V
+Tau.1 <- (solve(diag(p) - phi))^2%*%phi%*%V
+Tau.2 <- V%*%t(phi)%*%(solve(diag(p)-t(phi)))^2
+Tau <- -(Tau.1 + Tau.2)
+
+#Markov Chain
+chain <- as.matrix(mAr.sim(rep(0,p), as.matrix(phi), omega, N = n))
+
+ar.chain <- lapply(1:p, function(i) ar(chain[,i], aic = TRUE, order.max =NULL, plot = FALSE))
+
+m <- sapply(1:p, function(i) ar.chain[[i]][[1]])
+phi.i <- sapply(1:p, function(i) ar.chain[[i]][[2]])
+sigma.e <- sapply(1:p, function(i) ar.chain[[i]][[3]])
+Sigma.pilot <- sapply(1:p, function(i) sigma.e[[i]]/(1 - sum(phi.i[[i]]))^2)
+
+#optimal batch sizes/ theoretical values 
+b.coef.true <- sapply(1:p, function(i) ((2*diag(Tau)[i]^2)/(diag(Sigma)[i]^2))^(1/3))
+#b.coef <- sapply(1:p, function(i) ((8*Tau.pilot[i]^2)/(3*Sigma.pilot[i]^2))^(1/3))
+
+b.true <- b.coef.true*n^(1/3)
+#b.obm <- floor(b.coef*n^(1/3))
+
+b.avg <- mean(b.true)
+
+#Each BM estimators at skeleton points
+V <- lapply(1:p, function(j) sapply(1:length(b), function(i) 
+  (mcse(chain[,j], method = "bm", size = b[i])$se * sqrt(n))^2))
+
+#Bias and Bias Matrix
+
+bias <- lapply(1:p, function(j) sapply(1:length(b), function(i) 
+  V[[j]][i] - Sigma.pilot[j]))
+L <- lapply(1:p, function(i) bias[[i]]%*%t(bias[[i]]))
+
+# Variance of BM estimators
+Var.V <- lapply(1:p, function(j) sapply(1:length(b), function(i) 
+  (2*(b[i]/n)*Sigma.pilot[j]^2)))
+
+# Correlations of BM estimators 
+
+#only depends on relative batch size (square root)
+Corrij <- lapply(1:length(b), function(i) sapply(i:length(b), function(j) 
+  sqrt(b[i]/b[j])))
+
+g <- matrix(0,k,k)
+g[lower.tri(g, diag=TRUE)] <- unlist(Corrij)
+R <- forceSymmetric(g, uplo = "L")
+
+# Transform into Covariance matrix
+Covarij <- lapply(1:p, function(j) sqrt(diag(Var.V[[j]]))%*%R%*%sqrt(diag(Var.V[[j]])))
+
+#Risk Matrix
+ones <- matrix(1, nrow = k, ncol = 1)
+Risk <- lapply(1:p, function(i) beta1*L[[i]] + (1-beta1)*Covarij[[i]]) 
+
+# Optimal Solution
+alpha <- lapply(1:p, 
+                function(i) (solve(Risk[[i]])%*%ones)*
+                  (1/as.numeric((t(ones)%*%solve(Risk[[i]])%*%ones))))
+
+V.LC <- sapply(1:p, function(i) sum(alpha[[i]]*V[[i]]))
+Bias.LC <- sapply(1:p, function(i) V.LC[i] - Sigma.pilot[i])
+
+#mutivariate - BM
+V.multi <- lapply(1:k, function(i) mcse.multi(chain, method = "bm", size =b[i])[[1]])
+
+#Correlations
+R.multi <- lapply(1:k, function(i) cov2cor(V.multi[[i]]))
+#average correlation
+R.multi.avg <- Reduce('+', R.multi)/k
+
+#Transformed Coavriance matrix
+diag.m <- diag(V.LC)
+Sigma.scaled <- sqrt(diag.m)%*%R.multi.avg%*%sqrt(diag.m)
+Sigma.avg <- mcse.multi(chain, method = "bm", size = b.avg)[[1]]
+
+#MSE Comparison
+MSE <- sum((Sigma.scaled - Sigma)^2)/(p^2)
+MSE.avg <- sum((Sigma.avg - Sigma)^2)/(p^2)
+
+return(list(coef = alpha, MSE.lincomb = MSE, MSE.single = MSE.avg))  
+
+}
+
+
+```
+
+
+
+
+

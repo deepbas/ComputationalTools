@@ -1,0 +1,350 @@
+---
+title: "Linear_Combination_OBM"
+author: "Deepak Bastola"
+date: "January 13, 2019"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+header-includes:
+- \usepackage{bbm}
+- \usepackage{amsmath}
+---
+
+```{r, message=FALSE, warning=FALSE}
+library(mAr)
+library(mcmcse)
+library(matrixcalc)
+library(mAr)
+library(mcmcse)
+library(matrixcalc)
+library(parallel)
+library(mvtnorm)
+library(Matrix)
+
+```
+
+```{r}
+#function to calculate overlapping batch means
+obm <- function(chain, b){
+  a <- n - b + 1
+  k <- seq(1,b)
+  l <- seq(0,n-b)   
+
+  #overall mean
+  y.bar <- apply(chain, 2, mean)  
+  
+  #create index
+  idx <- sapply(l, function(i) i + k)
+  
+  #batches and batch means
+  y.l <- lapply(1:a, function(i) apply(chain[idx[,i],], 2, mean))  
+  
+  #sum of square deviations
+  sigma <- ((n*b)/((n-b)*(n-b+1))) * Reduce('+', lapply(1:a, 
+        function(i) (y.l[[i]]-y.bar)%*%t(y.l[[i]]-y.bar)))
+sigma 
+}
+
+```
+
+
+#
+
+1. I followed the linear combination estimators as detailed on the paper "ASYMPTOTIC .AND FINITE-SAMPLE CORRELATIONS BETWEEN OBM ESTIMATORS" by Antonio C. Pedrosa. 
+
+2. The linear combination method is better than the averaging method 
+$$
+\begin{split}
+\hat{V}^{LC} = \sum_{i=1}^k \alpha_i \hat{V}_i
+\end{split}
+$$
+
+
+3. 
+
+$$
+\begin{split}
+\Lambda_{ij} = bias(\hat{V}_i)\times bias(\hat{V}_j)
+\end{split}
+$$
+
+
+4. $\Lambda_{ij}$ is the bias matrix.
+
+$$
+\begin{split}
+\Sigma = cov(\hat{V}_i, \hat{V}_j)
+\end{split}
+$$
+
+
+5. $\Sigma$ is the dispersion matrix
+
+$$
+\begin{split}
+\Delta = \beta_1 \Lambda +  \beta_2 \Sigma 
+\end{split}
+$$
+
+
+
+6. $\Delta$ is the Risk matrix.
+
+7. The set of optimal weights is then given by
+
+$$
+\begin{split}
+\alpha^{*} = \frac{\Delta^{-1} 1 }{1^t \Delta^{-1} 1}
+\end{split}
+$$
+
+
+8. Once optimal combination is found for each component, the varcov matrix can be found by,
+
+$$
+\begin{split}
+\Sigma = D^{1/2} * R_{avg} * D^{1/2}
+\end{split}
+$$
+where D is a diagonal matrix with the new variances along the diagonals and $R_{avg}$ is the average correlation at the chosen batch points. 
+
+9. The resulting MSE is lower than calculated from just taking the average batch-sizes of the diagonal variances.
+
+
+```{r}
+# Implementation of Asymptotic Correlations
+# k = number of linear combinations  
+# Beta 1 = User defined relative proportions given to the bias 
+
+linearcomb <- function(k, beta1){
+
+# skeleton points
+b <- n^(seq(8,(8+k-1))/24)
+
+n <- 1e5
+
+#number of dimensions
+p <- 5
+
+omega <- diag(p)
+A <- matrix(rnorm(p*p,mean=0,sd=1), p, p)
+B <- A%*%t(A)
+m <- max(eigen(B)$values)
+phi0 <- B/(m+0.001)
+phi <- bdiag(0.90*phi0)
+
+#population covariance
+scratch <- diag((p)^2) - kronecker(phi,phi)
+V.s <- solve(scratch)%*%vec(diag(p))
+V <- matrix(V.s, nrow = p, byrow = TRUE)
+Sigma <- solve(diag(p)-phi)%*%V + V%*%solve(diag(p)-phi) -V
+Tau.1 <- (solve(diag(p) - phi))^2%*%phi%*%V
+Tau.2 <- V%*%t(phi)%*%(solve(diag(p)-t(phi)))^2
+Tau <- -(Tau.1 + Tau.2)
+
+#Markov Chain
+chain <- as.matrix(mAr.sim(rep(0,p), as.matrix(phi), omega, N = n))
+
+ar.chain <- lapply(1:p, function(i) ar(chain[,i], aic = TRUE, order.max =NULL, plot = FALSE))
+
+m <- sapply(1:p, function(i) ar.chain[[i]][[1]])
+phi.i <- sapply(1:p, function(i) ar.chain[[i]][[2]])
+sigma.e <- sapply(1:p, function(i) ar.chain[[i]][[3]])
+Sigma.pilot <- sapply(1:p, function(i) sigma.e[[i]]/(1 - sum(phi.i[[i]]))^2)
+
+#optimal batch sizes/ theoretical values 
+b.coef.true <- sapply(1:p, function(i) ((8*diag(Tau)[i]^2)/(3*diag(Sigma)[i]^2))^(1/3))
+#b.coef <- sapply(1:p, function(i) ((8*Tau.pilot[i]^2)/(3*Sigma.pilot[i]^2))^(1/3))
+
+b.true <- b.coef.true*n^(1/3)
+#b.obm <- floor(b.coef*n^(1/3))
+
+b.avg <- mean(b.true)
+
+#Each OBM estimators at skeleton points
+V <- lapply(1:p, function(j) sapply(1:length(b), function(i) 
+  (mcse(chain[,j], method = "obm", size = b[i])$se * sqrt(n))^2))
+
+#Bias and Bias Matrix
+bias <- lapply(1:p, function(j) sapply(1:length(b), function(i) 
+  V[[j]][i] - Sigma.pilot[j]))
+L <- lapply(1:p, function(i) bias[[i]]%*%t(bias[[i]]))
+
+# Variance of OBM estimators
+Var.V <- lapply(1:p, function(j) sapply(1:length(b), function(i) 
+  ((4/3)*(b[i]/n)*Sigma.pilot[j]^2)))
+
+# Correlations of OBM estimators 
+# Easier/ Depends only on relative batch distances
+# Doesn't depend on data type
+
+Corrij <- lapply(1:length(b), function(i) sapply(i:length(b), function(j) 
+  sqrt(b[i]/b[j])*(1+0.5*(b[j] - b[i])/b[j])))
+
+g <- matrix(0,k,k)
+g[lower.tri(g, diag=TRUE)] <- unlist(Corrij)
+R <- forceSymmetric(g, uplo = "L")
+
+# Transform into Covariance matrix
+Covarij <- lapply(1:p, function(j) sqrt(diag(Var.V[[j]]))%*%R%*%sqrt(diag(Var.V[[j]])))
+
+#Risk Matrix
+ones <- matrix(1, nrow = k, ncol = 1)
+Risk <- lapply(1:p, function(i) beta1*L[[i]] + (1-beta1)*Covarij[[i]]) 
+
+# Optimal Solution
+alpha <- lapply(1:p, 
+                function(i) (solve(Risk[[i]])%*%ones)*
+                  (1/as.numeric((t(ones)%*%solve(Risk[[i]])%*%ones))))
+
+V.LC <- sapply(1:p, function(i) sum(alpha[[i]]*V[[i]]))
+Bias.LC <- sapply(1:p, function(i) V.LC[i] - Sigma.pilot[i])
+
+#mutivariate - OBM
+V.multi <- lapply(1:k, function(i) obm(chain, b[i]))
+
+#Correlations
+R.multi <- lapply(1:k, function(i) cov2cor(V.multi[[i]]))
+#average correlation
+R.multi.avg <- Reduce('+', R.multi)/k
+
+#Transformed Coavriance matrix
+diag.m <- diag(V.LC)
+Sigma.scaled <- sqrt(diag.m)%*%R.multi.avg%*%sqrt(diag.m)
+Sigma.avg <- obm(chain, floor(b.avg))
+
+#MSE Comparison
+MSE <- sum((Sigma.scaled - Sigma)^2)/(p^2)
+MSE.avg <- sum((Sigma.avg - Sigma)^2)/(p^2)
+
+return(list(MSE.lincomb = MSE, MSE.single = MSE.avg))  
+
+}
+
+```
+
+
+```{r}
+
+#start_time <- Sys.time()
+ss <- seq(2,10)
+#beta1 <- c(0.4,0.5,0.6)
+#sim <- lapply(ss, function(j) linearcomb(j,0.5))
+#end_time <- Sys.time()
+#end_time - start_time
+#save(sim, file = "lincomb.rda")
+
+load(file = "lincomb.rda")
+plot(ss, do.call(rbind, sim)[,1], type = "l", col = "red", 
+     ylab = "MSE", ylim = c(0,40), xlab = "Number of linear components", 
+     main = "MSE Comparison for Linear Combination of OBM estimators")
+lines(ss, do.call(rbind, sim)[,2], col = "blue")
+legend("topright", col = c("red", "blue"), 
+       legend = c("Lin Comb","No combination (average batch size)"), 
+       lty = c(1,1), lwd = c(1,1))
+
+```
+
+
+10. The following is a method detailed in "Bias-aware linear combination of variance estimators, 2007" by David Goldsman. 
+
+
+```{r}
+n <- 1e5
+p <- 5
+
+omega <- diag(p)
+
+#latest paper conditions
+A <- matrix(rnorm(p*p,mean=0,sd=1), p, p)
+B <- A%*%t(A)
+m <- max(eigen(B)$values)
+phi0 <- B/(m+0.001)
+phi <- bdiag(0.90*phi0)
+
+#population covariance
+scratch <- diag((p)^2) - kronecker(phi,phi)
+V.s <- solve(scratch)%*%vec(diag(p))
+V <- matrix(V.s, nrow = p, byrow = TRUE)
+Sigma <- solve(diag(p)-phi)%*%V + V%*%solve(diag(p)-phi) -V
+Tau.1 <- (solve(diag(p) - phi))^2%*%phi%*%V
+Tau.2 <- V%*%t(phi)%*%(solve(diag(p)-t(phi)))^2
+Tau <- -(Tau.1 + Tau.2)
+
+#Markov Chain
+chain <- as.matrix(mAr.sim(rep(0,p), as.matrix(phi), omega, N = n))
+
+ar.chain <- lapply(1:p, function(i) ar(chain[,i], aic = TRUE, order.max =10, plot = FALSE))
+
+m <- sapply(1:p, function(i) ar.chain[[i]][[1]])
+phi.i <- sapply(1:p, function(i) ar.chain[[i]][[2]])
+sigma.e <- sapply(1:p, function(i) ar.chain[[i]][[3]])
+Sigma.pilot <- sapply(1:p, function(i) sigma.e[[i]]/(1 - sum(phi.i[[i]]))^2)
+
+#Tau. pilot estimation
+#sample autocovariance
+ar.acf <- lapply(1:p, function(i) acf(chain[,i], type = "covariance", 
+                                      lag.max = 10, plot = FALSE)$acf)
+ll <- sapply(1:p, function(j) sapply(1:m[j], function(i) 
+  sapply(1:i, function(k) (k * ar.acf[[j]][abs(k-i)+1]))))
+ll.sum <- sapply(1:p, function(j) sapply(1:m[j], function(i) 
+  sum(ll[[j]][[i]])))
+t1 <- sapply(1:p, function(j) sum(phi.i[[j]]*ll.sum[[j]]))
+t2 <- sapply(1:p, function(j) 
+  ((sigma.e[[j]] - ar.acf[[j]][1])/2)* sum(seq(1,m[[j]])*phi.i[[j]])) 
+
+mult <- sapply(1:p, function(i) 1/(1 - sum(phi.i[[i]])))
+Tau.pilot <- -2*(t1 + t2)*mult 
+
+#optimal batch sizes
+b.coef.true <- sapply(1:p, function(i) ((8*diag(Tau)[i]^2)/(3*diag(Sigma)[i]^2))^(1/3))
+b.coef <- sapply(1:p, function(i) ((8*Tau.pilot[i]^2)/(3*Sigma.pilot[i]^2))^(1/3))
+
+b.true <- b.coef.true*n^(1/3)
+b.obm <- floor(b.coef*n^(1/3))
+
+#b <-c(n^(1/3), n^(5/12), n^(1/2))
+
+#Component 1
+m <- b.obm[1]
+r <- 0.5
+
+lincomb <- function(b1,b2, out){
+ V1 <- (mcse(out, method = "obm", size = floor(b1))$se * sqrt(n))^2
+ V2 <- (mcse(out, method = "obm", size = floor(b2))$se * sqrt(n))^2 
+ V1/(1-r) - (r*V2/(1-r)) 
+}
+
+#ar.chain <- ar(out, order.max = NULL, method = "mle", hessian = FALSE)
+
+#Step 2
+VC <- lincomb(floor(m), floor(m*r), chain[,1])
+EV <- Sigma.pilot[1]
+B.thresh <- 0.05*EV
+
+#Step 3
+#check bias validity constraint
+while (abs(VC - EV) <= B.thresh){
+    m.star = m
+    m = 0.5*m
+    if (m<=3) break
+    
+    VC <- lincomb(m, floor(m*r), chain[,1])
+    
+}
+
+#check the r criteria
+VC <- lincomb(m.star, floor(m.star*r), chain[,1])
+while (abs(VC - EV) <= B.thresh){
+    r.star = r
+    r = r -.1
+    if (r==0) break
+    VC <- lincomb(m.star, floor(m.star*r), chain[,1])
+}
+
+b.obm[1]
+m1 <- m.star;m1
+r1 <- r.star;r1
+
+```

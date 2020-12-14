@@ -1,0 +1,63 @@
+---
+title: "Modified Lugsail"
+author: "Deepak Bastola"
+date: "January 31, 2019"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r}
+# Modified Lag Window Function
+
+#define the lugsail function
+ m.lug <- function(k,b,c,r,s){
+   wn1 <- ifelse((0 <= abs(k) & abs(k) <= b), (1/(1-c))*(1-abs(k)/b),0)
+   wn2 <- ifelse((0 <= abs(k) & abs(k) <= b/r), (1/(3*(1-c)))*(1-abs(k)/(b/r)),0)
+   wn2.l <- ifelse((0 <= abs(k) & abs(k) <= b/r), (c/(1-c))*(1-abs(k)/(b/r)),0)
+   wn3 <- ifelse((0 <= abs(k) & abs(k) <= b/s), ((3*c-1)/(3*(1-c)))*(1-abs(k)/(b/s)),0)
+   wnlm <- wn1 - wn2 - wn3
+   wnb <- ifelse((0 <= abs(k) & abs(k) <= b), (1-abs(k)/b),0)
+   wnb2 <- ifelse((0 <= abs(k) & abs(k) <= b/2), (1-abs(k)/(b/2)),0)
+   wnl <- wn1 - wn2.l
+   wnft <- 2*wnb - wnb2
+   return(c(wnlm,wnb,wnl,wnft))
+ }
+
+
+b <- 50
+k <- seq(0,b,0.1)
+wn.lapply <- lapply(k, function(i) m.lug(i,b, 1/2, 3, 6))
+wn <- do.call(rbind, wn.lapply)
+
+pdf("lagwindows.pdf")
+plot(k, wn[,1], type = "l", ylim = c(0,2.5), col = "blue", ylab = "Weights", xaxt='n', lty = 1)
+lines(k, wn[,2], col = "red", lty = 2)
+lines(k,wn[,3], col = "black", lty = 3)
+lines(k,wn[,4], col = "orange", lty =4)
+axis(1, at = c(50/6,50/3, 50/2,50), labels = c("b/6","b/3","b/2","b"))
+
+legend("topright", legend = c("Modified Lugsail", "Bartlett", "Lugsail","Flat-top"),
+       lty = c(1,2,3,4), col = c("blue","red","black","orange"))
+dev.off()
+
+```
+
+#
+
+Fix the lugsail at $b/3$. Then the new estimator using the modified lugsail window can be written as,
+$$
+\begin{split}
+\Sigma = \frac{1}{1-c} \Sigma_b - \frac{1}{3(1-c)}\Sigma_{\frac{b}{3}} - \frac{3c-1}{3(1-c)}\Sigma_{\frac{b}{6}}
+\end{split}
+$$
+
+The corresponding lag-window can be written as,
+
+$$
+\begin{split}
+w_n(k) = &\frac{1}{1-c} \bigg(1 - \frac{|k|}{b}\bigg) I(0 \leq |k| \leq b) \\
+&- \frac{1}{3(1-c)}\bigg(1 - \frac{|k|}{b/3}\bigg) I(0 \leq |k| \leq \frac{b}{3}) \\&
+- \frac{3c -1}{3(1-c)}\bigg(1 - \frac{|k|}{b/6}\bigg) I(0\leq|k|\leq\frac{b}{6})
+\end{split}
+$$
